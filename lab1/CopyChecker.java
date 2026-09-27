@@ -1,6 +1,8 @@
 import java.net.DatagramPacket;
 import java.net.InetAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.UUID;
 
 public class CopyChecker {
 
@@ -12,24 +14,41 @@ public class CopyChecker {
         this.copies = copies;
     }
 
+    private static UUID parseUuid(String s) {
+        try {
+            return UUID.fromString(s);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
     public void checkCopy(DatagramPacket packet) {
-        String data = new String(packet.getData(), 0, packet.getLength());
+        String data = new String(packet.getData(), 0, packet.getLength(),
+                StandardCharsets.UTF_8);
 
         if (!data.startsWith("COPYFINDER|")) {
             return;
         }
 
         String[] parts = data.split("\\|");
-        if (parts.length < 5) {
+        if (parts.length < 4) {
             return;
         }
 
-        String copyIP     = parts[1];
-        String senderUuid = parts[4];
-
-        if (senderUuid.equals(uuId)) {
+        String senderUuidStr = parts[3];
+        UUID senderUuid = parseUuid(senderUuidStr);
+        if (senderUuid == null) {
             return;
         }
+        if (senderUuid.toString().equals(uuId)) {
+            return;
+        }
+
+        InetAddress senderAddr = packet.getAddress();
+        if (senderAddr == null) {
+            return;
+        }
+        String copyIP = senderAddr.getHostAddress();
 
         String key = copyIP + "#" + senderUuid;
 
@@ -42,11 +61,12 @@ public class CopyChecker {
         final boolean[] created = {false};
         copies.computeIfAbsent(key, k -> {
             created[0] = true;
-            return new CopyInfo(copyIP, senderUuid);
+            return new CopyInfo(copyIP, senderUuid.toString());
         });
 
         if (created[0]) {
-            System.out.println("[CHECKER] НОВАЯ КОПИЯ: ip=" + copyIP + " uuid=" + senderUuid);
+            System.out.println("[CHECKER] НОВАЯ КОПИЯ: ip=" + copyIP
+                    + " uuid=" + senderUuid);
         }
     }
 }

@@ -2,21 +2,12 @@ import java.io.IOException;
 import java.net.*;
 import java.util.Enumeration;
 
-
-public class NetworkUtils {
+public final class NetworkUtils {
 
     private NetworkUtils() {}
 
     public static NetworkInterface pickMulticastInterface() throws IOException {
         System.out.println("[NET] Ищу multicast-интерфейс...");
-
-
-        NetworkInterface radmin = pickRadmin();
-        if (radmin != null) {
-            System.out.println("[NET] Выбран (Radmin VPN, ЖЁСТКО): "
-                    + radmin.getDisplayName());
-            return radmin;
-        }
 
         NetworkInterface ni = pickByInternetRoute();
         if (ni != null) {
@@ -43,34 +34,6 @@ public class NetworkUtils {
         return NetworkInterface.getByInetAddress(InetAddress.getLoopbackAddress());
     }
 
-
-    private static NetworkInterface pickRadmin() throws SocketException {
-        Enumeration<NetworkInterface> nis = NetworkInterface.getNetworkInterfaces();
-        while (nis.hasMoreElements()) {
-            NetworkInterface ni = nis.nextElement();
-
-            String name = (ni.getName() + " " + ni.getDisplayName()).toLowerCase();
-            if (!name.contains("radmin")) continue;
-
-            if (!ni.isUp() || !ni.supportsMulticast() || ni.isLoopback()) {
-                System.out.println("[NET] Radmin найден, но не подходит: "
-                        + ni.getDisplayName()
-                        + " (up=" + ni.isUp()
-                        + ", multicast=" + ni.supportsMulticast() + ")");
-                continue;
-            }
-
-            if (!hasRealIpv4(ni)) {
-                System.out.println("[NET] Radmin найден: "
-                        + ni.getDisplayName());
-                continue;
-            }
-
-            return ni;
-        }
-        return null;
-    }
-
     private static NetworkInterface pickByInternetRoute() {
         String[] probes = { "8.8.8.8", "1.1.1.1", "208.67.222.222" };
 
@@ -94,7 +57,7 @@ public class NetworkUtils {
                     return ni;
                 }
             } catch (Exception ignored) {
-
+                // пробуем следующий probe
             }
         }
         return null;
@@ -176,7 +139,6 @@ public class NetworkUtils {
         }
         return false;
     }
-
     public static String resolveLocalIp(NetworkInterface ni) {
         if (ni == null) return "unknown";
         Enumeration<InetAddress> addrs = ni.getInetAddresses();

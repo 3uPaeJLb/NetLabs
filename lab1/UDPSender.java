@@ -1,5 +1,6 @@
 import java.io.IOException;
 import java.net.*;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalTime;
 
 public class UDPSender implements UDPMulticastNode {
@@ -9,21 +10,19 @@ public class UDPSender implements UDPMulticastNode {
 
     private final String multicastGroupAddress;
     private final String APP_UUID;
+    private final NetworkInterface ni;
 
     private volatile boolean running = true;
     private int packetCount = 0;
 
-    public UDPSender(String multicastGroupAddress, String APP_UUID) {
+    public UDPSender(String multicastGroupAddress, String APP_UUID, NetworkInterface ni) {
         this.multicastGroupAddress = multicastGroupAddress;
         this.APP_UUID = APP_UUID;
+        this.ni = ni;
     }
 
     @Override
     public void run() throws IOException, InterruptedException {
-        // 1. Тот же выбор интерфейса, что и в UDPReceiver
-        NetworkInterface ni = NetworkUtils.pickMulticastInterface();
-        String localIP = NetworkUtils.resolveLocalIp(ni);
-
         MulticastSocket sendSocket = new MulticastSocket();
         sendSocket.setNetworkInterface(ni);
         sendSocket.setTimeToLive(1);
@@ -33,18 +32,18 @@ public class UDPSender implements UDPMulticastNode {
 
         System.out.println("[SENDER] Отправляю в " + multicastGroupAddress + ":" + PORT
                 + " через " + ni.getDisplayName()
-                + " (локальный IP " + localIP + ")");
+                + " (локальный IP " + NetworkUtils.resolveLocalIp(ni) + ")");
 
         try {
             while (running) {
                 packetCount++;
 
                 String message = String.format(
-                        "COPYFINDER|%s|%d|%s|%s",
-                        localIP, packetCount, LocalTime.now(), APP_UUID
+                        "COPYFINDER|%d|%s|%s",
+                        packetCount, LocalTime.now(), APP_UUID
                 );
 
-                byte[] data = message.getBytes();
+                byte[] data = message.getBytes(StandardCharsets.UTF_8);
                 DatagramPacket sendPacket = new DatagramPacket(data, data.length, group, PORT);
                 sendSocket.send(sendPacket);
 
@@ -59,5 +58,3 @@ public class UDPSender implements UDPMulticastNode {
         running = false;
     }
 }
-
-

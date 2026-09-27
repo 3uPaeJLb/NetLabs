@@ -1,3 +1,4 @@
+import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
@@ -9,17 +10,28 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class Main {
 
-    private static final String MULTICAST_GROUP_ADDRESS = "239.255.255.250";
+
+    private static String multicastGroupAddress;
     private static final String APP_UUID = UUID.randomUUID().toString();
 
-    public static void main(String[] args) throws InterruptedException, SocketException {
+    public Main() throws IOException {
+    }
 
+    public static void main(String[] args) throws InterruptedException, IOException {
 
+        NetworkInterface ni = NetworkUtils.pickMulticastInterface();
+
+        if (args.length < 1) {
+            System.err.println("Usage: java Main <multicast-group-address>");
+            System.err.println("Example: java Main 239.255.255.250");
+            System.exit(1);
+        }
+        multicastGroupAddress = args[0];
         //printAllInterfaces();
         Map<String, CopyInfo> copies = new ConcurrentHashMap<>();
 
-        UDPReceiver receiver = new UDPReceiver(MULTICAST_GROUP_ADDRESS, APP_UUID, copies);
-        UDPSender   sender   = new UDPSender(MULTICAST_GROUP_ADDRESS, APP_UUID);
+        UDPReceiver receiver = new UDPReceiver(multicastGroupAddress, APP_UUID, copies, ni);
+        UDPSender   sender   = new UDPSender(multicastGroupAddress, APP_UUID, ni);
         CopyMonitor monitor  = new CopyMonitor(copies);
 
         Thread senderThread  = new Thread(() -> runSafely(sender), "udp-sender");

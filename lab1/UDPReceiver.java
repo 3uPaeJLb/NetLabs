@@ -8,21 +8,23 @@ public class UDPReceiver implements UDPMulticastNode {
     private static final int TIMEOUT_MS = 1000;
     private static final int BUFFER_SIZE = 1024;
 
+
     private final String multicastGroup;
     private final CopyChecker copyChecker;
+    private final NetworkInterface ni;
 
     private volatile boolean running = true;
     private int timeoutCount = 0;
 
     public UDPReceiver(String multicastGroup, String APP_UUID,
-                       Map<String, CopyInfo> copies) {
+                       Map<String, CopyInfo> copies, NetworkInterface ni) {
         this.multicastGroup = multicastGroup;
         this.copyChecker = new CopyChecker(APP_UUID, copies);
+        this.ni = ni;
     }
 
     @Override
     public void run() throws IOException {
-        NetworkInterface ni = NetworkUtils.pickMulticastInterface();
 
         MulticastSocket socket = new MulticastSocket(null);
         socket.setReuseAddress(true);
