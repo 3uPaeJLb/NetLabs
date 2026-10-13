@@ -1,4 +1,4 @@
-Запуск Сервера: java Main port
+Запуск Сервера: java Main port \n
 Запуск Клиента:  java Main 192.168.0.149 port file_path
 
 Пример:
