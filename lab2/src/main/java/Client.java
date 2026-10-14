@@ -1,91 +1,112 @@
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 
-public class Client {
-    //private static final String PORT = "8000";
+public class Client implements TcpClient {
+
+    private static final int SEND_BUFFER_SIZE = 512;
 
     private String fileName;
     private Socket socket;
 
-    private void sendFile(String filePath) {
-        try (FileInputStream fileInputStream = new FileInputStream(filePath)){
-            int minDataSize = 512;
-            byte[] Data = new byte[minDataSize];
+    private void sendFile(String filePath) throws IOException {
+        try (FileInputStream fileInputStream = new FileInputStream(filePath)) {
+            byte[] data = new byte[SEND_BUFFER_SIZE];
             int readCountBytes;
+            OutputStream out = socket.getOutputStream();
 
-            while (true){
-                readCountBytes = fileInputStream.read(Data);
-
-                if (readCountBytes < 0)
-                    break;
-
-                socket.getOutputStream().write(Data, 0, readCountBytes);
+            while ((readCountBytes = fileInputStream.read(data)) != -1) {
+                out.write(data, 0, readCountBytes);
             }
-        }catch (IOException e) {
-            throw new RuntimeException(e);
+            out.flush();
         }
     }
 
-    private Long getFileSize(String filePath) {
-        File file = new File(filePath);
-        return file.length();
+    private long getFileSize(String filePath) {
+        return new File(filePath).length();
     }
 
     private String extractFileName(String filePath) {
-        File file = new File(filePath);
-        fileName = file.getName();
-        return fileName;
+        return new File(filePath).getName();
     }
 
-    public void run(String filePath) throws IOException, InterruptedException {
+    private String readResponse() throws IOException {
+        BufferedReader reader = new BufferedReader(
+                new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+        return reader.readLine();
+    }
+
+    @Override
+    public void run(String filePath) throws IOException {
         try {
+            File file = new File(filePath);
+            if (!file.exists() || !file.isFile()) {
+                throw new IOException("Файл не найден или не является обычным файлом: " + filePath);
+            }
+
             fileName = extractFileName(filePath);
             long fileSize = getFileSize(filePath);
 
+            int nameBytes = fileName.getBytes(StandardCharsets.UTF_8).length;
+            if (nameBytes > MAX_FILE_NAME_BYTES) {
+                throw new IOException("Длина имени файла превышает " + MAX_FILE_NAME_BYTES
+                        + " байт: " + nameBytes);
+            }
+
+            if (fileSize > MAX_FILE_SIZE) {
+                throw new IOException("Размер файла превышает 1 ТБ: " + fileSize + " байт");
+            }
+
             System.out.println("Sending file: " + fileName + " (" + fileSize + " bytes)");
 
-            socket.getOutputStream().write(("NAME:" + fileName + "\n").getBytes(StandardCharsets.UTF_8));
-            socket.getOutputStream().write(("SIZE:" + fileSize + "\n").getBytes(StandardCharsets.UTF_8));
+            OutputStream out = socket.getOutputStream();
 
-            socket.getOutputStream().write("DATA:\n".getBytes(StandardCharsets.UTF_8));
-            socket.getOutputStream().flush();
+            out.write((HEADER_NAME + fileName + LINE_SEPARATOR)
+                    .getBytes(StandardCharsets.UTF_8));
+            out.write((HEADER_SIZE + fileSize + LINE_SEPARATOR)
+                    .getBytes(StandardCharsets.UTF_8));
+            out.write((HEADER_DATA + LINE_SEPARATOR)
+                    .getBytes(StandardCharsets.UTF_8));
+            out.flush();
 
             System.out.println("Headers sent, starting file transfer...");
 
             sendFile(filePath);
 
-            Thread.sleep(1000);
+            System.out.println("File sent, waiting for server response...");
 
-            System.out.println("File sent successfully!");
+            String response = readResponse();
+            if (response == null) {
+                System.out.println("Server closed connection without response.");
+            } else if (RESPONSE_OK.equals(response)) {
+                System.out.println("Server confirmed: file received successfully.");
+            } else if (response.startsWith(RESPONSE_ERROR)) {
+                System.out.println("Server reported error: " + response);
+            } else {
+                System.out.println("Unexpected server response: " + response);
+            }
 
         } finally {
-            if (socket != null) {
-                socket.close();
-            }
+            close();
         }
     }
 
-    public Boolean setConnectionWithServer(String ip, String port) throws IOException {
+    @Override
+    public void connect(String ip, String port) throws IOException {
         socket = new Socket(InetAddress.getByName(ip), Integer.parseInt(port));
         System.out.println("Connected to server!");
-        return true;
     }
 
-    public static void main(String[] args) throws IOException, InterruptedException {
-        //String serverIP ="127.0.0.1";
-        String serverIP = args[0];
-        String serverPort = args[1];
-
-        String filePath = args[2];
-        System.out.println("File successful found. Path: " + filePath);
-        Client client = new Client();
-
-        client.setConnectionWithServer(serverIP, serverPort);
-
-        client.run(filePath);
+    @Override
+    public void close() throws IOException {
+        if (socket != null && !socket.isClosed()) {
+            socket.close();
+        }
     }
 }
