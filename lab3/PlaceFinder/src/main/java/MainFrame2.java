@@ -1,151 +1,217 @@
 import javax.swing.*;
+import javax.swing.text.BadLocationException;
+import javax.swing.text.SimpleAttributeSet;
+import javax.swing.text.StyleConstants;
+import javax.swing.text.StyledDocument;
 import java.awt.*;
 import java.io.IOException;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
 
 public class MainFrame2 extends JFrame {
 
-    private GraphhopperApiController graphhopperApiController = new GraphhopperApiController();
-    private OpenWeatherApiController openWeatherApiController = new OpenWeatherApiController();
-    private WikipediaApiController wikipediaApiController = new WikipediaApiController();
-    private DefaultListModel<String> placeModel = new DefaultListModel<>();
-    private DefaultListModel<String> interestingPlaceModel = new DefaultListModel<>();
+    private static final String NO_SECOND_ARG = "";
 
-    public MainFrame2() {
+    private final GraphhopperApiController graphhopperApiController;
+    private final OpenWeatherApiController openWeatherApiController;
+    private final WikipediaApiController wikipediaApiController;
+
+    private final DefaultListModel<String> placeModel = new DefaultListModel<>();
+    private final DefaultListModel<String> interestingPlaceModel = new DefaultListModel<>();
+
+    private final JTextArea weatherTextArea = new JTextArea();
+    private final JTextPane descOfInterestPlacesTextPane = new JTextPane();
+    private final JLabel imageLabel = new JLabel();
+
+    public MainFrame2() throws IOException {
         super("Place Finder");
 
-        setDefaultCloseOperation(EXIT_ON_CLOSE);
-        setBounds(400, 100, 900, 700);
-        setMinimumSize(new Dimension(640, 480));
+        graphhopperApiController = new GraphhopperApiController();
+        openWeatherApiController = new OpenWeatherApiController();
+        wikipediaApiController = new WikipediaApiController();
 
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setBounds(400, 50, 1000, 900);
+        setMinimumSize(new Dimension(800, 700));
         setLayout(null);
 
         JTextField textField = new JTextField();
         textField.setBounds(10, 10, 400, 30);
-        textField.setVisible(true);
-        this.add(textField);
+        add(textField);
 
         JButton searchButton = new JButton("Find");
         searchButton.setBounds(410, 10, 100, 30);
-        searchButton.setVisible(true);
-        this.add(searchButton);
+        add(searchButton);
 
         JList<String> placeTable = new JList<>(placeModel);
-        placeTable.setBounds(10, 50, 400, 100);
-        placeTable.setVisible(true);
-        this.add(placeTable);
+        JScrollPane placeScroll = new JScrollPane(placeTable);
+        placeScroll.setBounds(10, 50, 400, 250);
+        add(placeScroll);
 
-        JTextArea weatherTextArea = new JTextArea();
-        weatherTextArea.setBounds(430, 50, 400, 100);
         weatherTextArea.setEditable(false);
         weatherTextArea.setLineWrap(true);
         weatherTextArea.setWrapStyleWord(true);
-        this.add(weatherTextArea);
+        JScrollPane weatherScroll = new JScrollPane(weatherTextArea);
+        weatherScroll.setBounds(430, 50, 550, 250);
+        add(weatherScroll);
 
         JList<String> interestingPlacesTable = new JList<>(interestingPlaceModel);
-        interestingPlacesTable.setBounds(10, 200, 400, 100);
-        interestingPlacesTable.setVisible(true);
-        this.add(interestingPlacesTable);
+        JScrollPane interestingScroll = new JScrollPane(interestingPlacesTable);
+        interestingScroll.setBounds(10, 320, 400, 520);
+        add(interestingScroll);
 
-        JTextArea descOfInterestPlacesTextArea = new JTextArea();
-        descOfInterestPlacesTextArea.setBounds(430, 200, 400, 400);
-        descOfInterestPlacesTextArea.setEditable(false);
-        descOfInterestPlacesTextArea.setLineWrap(true);
-        descOfInterestPlacesTextArea.setWrapStyleWord(true);
-        this.add(descOfInterestPlacesTextArea);
+        descOfInterestPlacesTextPane.setEditable(false);
+        JScrollPane descScroll = new JScrollPane(descOfInterestPlacesTextPane);
+        descScroll.setBounds(430, 320, 550, 125);
+        add(descScroll);
+
+        imageLabel.setBounds(430, 455, 550, 385);
+        imageLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        imageLabel.setBorder(BorderFactory.createLineBorder(Color.LIGHT_GRAY));
+        add(imageLabel);
 
         searchButton.addActionListener(e -> {
+            String searchText = textField.getText().trim();
+            if (searchText.isEmpty()) return;
+
             try {
-                String searchText = textField.getText().trim();
-                graphhopperApiController.findPlaces(searchText).thenAccept(places -> {
-                    placeModel.clear();
-                    placeModel.addAll(places);
-                });
+                graphhopperApiController.find(searchText, NO_SECOND_ARG)
+                        .thenAccept(places -> SwingUtilities.invokeLater(() -> {
+                            placeModel.clear();
+                            placeModel.addAll(places);
+                        }))
+                        .exceptionally(ex -> {
+                            SwingUtilities.invokeLater(() ->
+                                    weatherTextArea.setText("Search error: " + rootMessage(ex)));
+                            return null;
+                        });
             } catch (IOException ex) {
                 throw new RuntimeException(ex);
             }
         });
 
         placeTable.addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting()) {
-                String place = placeTable.getSelectedValue();
-                String lat = " ";
-                String lng = " ";
+            if (e.getValueIsAdjusting()) return;
 
-                if (place != null) {
-                    String[] parts = place.split(" ");
-                    if (parts.length == 4) {
-                        lat = parts[2];
-                        lng = parts[3];
-                    }
-                    else if (parts.length == 5) {
-                        lat = parts[3];
-                        lng = parts[4];
-                    }
-                }
+            String place = placeTable.getSelectedValue();
+            if (place == null) return;
 
-                lat = lat.trim().replace(",", ".");
-                lng = lng.trim().replace(",", ".");
+            String[] latLng = PlaceParser.parseLatLng(place);
+            if (latLng == null) {
+                weatherTextArea.setText("Не удалось извлечь координаты из: " + place);
+                return;
+            }
+            String lat = latLng[0];
+            String lng = latLng[1];
 
-                try {
-                    openWeatherApiController.findWeather(lat, lng).thenAccept(weatherTextArea::setText);
-
-                    wikipediaApiController.findInterestingPlaces(lat, lng).thenAccept(interestingPlaces ->{
-                        interestingPlaceModel.clear();
-                        interestingPlaceModel.addAll(interestingPlaces);
-                            });
-
-                    //CompletableFuture<List<String>> descOfInterestPlacesFuture = wikipediaApiController
-                    //      .findDescOfInterestPlaces(placesFuture);
-
-                    interestingPlacesTable.addListSelectionListener(e1-> {
-                        if (!e1.getValueIsAdjusting()) {
-                            String interestingPlace = interestingPlacesTable.getSelectedValue();
-                             String pageId = "";
-                            if (interestingPlace != null)
-                                pageId = wikipediaApiController.extractPageId(interestingPlace);
-
-                            wikipediaApiController.findDescOfInterestPlaceById(pageId).thenAccept(descOfInterestPlace -> {
-                                descOfInterestPlacesTextArea.setText("");
-
-                                descOfInterestPlacesTextArea.append(descOfInterestPlace + "\n");
-
-                            });
-
-                        }
-
+            openWeatherApiController.find(lat, lng)
+                    .thenAccept(weather -> SwingUtilities.invokeLater(() ->
+                            weatherTextArea.setText(String.valueOf(weather))))
+                    .exceptionally(ex -> {
+                        SwingUtilities.invokeLater(() ->
+                                weatherTextArea.setText("Weather error: " + rootMessage(ex)));
+                        return null;
                     });
 
-                    /*CompletableFuture.allOf(weatherFuture, placesFuture, descOfInterestPlacesFuture)
-                            .thenRun(() -> {
-                                try {
-                                    String weather = weatherFuture.get();
-                                    List<String> interestingPlaces = placesFuture.get();
-                                    List<String> descOfInterestPlaces = descOfInterestPlacesFuture.get();
+            wikipediaApiController.find(lat, lng)
+                    .thenAccept(interestingPlaces -> SwingUtilities.invokeLater(() -> {
+                        interestingPlaceModel.clear();
+                        interestingPlaceModel.addAll(interestingPlaces);
+                        descOfInterestPlacesTextPane.setText("");
+                        imageLabel.setIcon(null);
+                        imageLabel.setText("");
+                    }))
+                    .exceptionally(ex -> {
+                        SwingUtilities.invokeLater(() ->
+                                showDescription("Ошибка", "Places error: " + rootMessage(ex)));
+                        return null;
+                    });
+        });
 
-                                    weatherTextArea.setText(weather);
+        interestingPlacesTable.addListSelectionListener(e -> {
+            if (e.getValueIsAdjusting()) return;
 
-                                    interestingPlacesTextArea.setText("");
-                                    for (String interestingPlace : interestingPlaces) {
-                                        interestingPlacesTextArea.append(interestingPlace + "\n");
-                                    }
+            String interestingPlace = interestingPlacesTable.getSelectedValue();
+            if (interestingPlace == null) return;
 
-                                    descOfInterestPlacesTextArea.setText("");
-                                    for (String descOfInterestPlace : descOfInterestPlaces) {
-                                        descOfInterestPlacesTextArea.append(descOfInterestPlace + "\n");
-                                    }
-
-                                } catch (Exception ex) {
-                                    System.err.println("Error getting results: " + ex.getMessage());
-                                }
-                            });*/
-                } catch (IOException ex) {
-                    throw new RuntimeException(ex);
-                }
+            String[] parsed = PlaceParser.parseInterestingPlace(interestingPlace);
+            if (parsed == null) {
+                showDescription("Ошибка", "Не удалось разобрать: " + interestingPlace);
+                return;
             }
+            String pageId = parsed[0];
+            String title  = parsed[1];
+
+            wikipediaApiController.findDescriptionWithImage(pageId)
+                    .thenAccept(result -> SwingUtilities.invokeLater(() -> {
+                        showDescription(title, result.description());
+                        loadImage(result.imageUrl());
+                    }))
+                    .exceptionally(ex -> {
+                        SwingUtilities.invokeLater(() ->
+                                showDescription(title, "Description error: " + rootMessage(ex)));
+                        return null;
+                    });
         });
 
         setVisible(true);
+    }
+
+    private void showDescription(String title, String description) {
+        descOfInterestPlacesTextPane.setText("");
+        StyledDocument doc = descOfInterestPlacesTextPane.getStyledDocument();
+
+        SimpleAttributeSet titleStyle = new SimpleAttributeSet();
+        StyleConstants.setBold(titleStyle, true);
+        StyleConstants.setFontSize(titleStyle, 15);
+
+        SimpleAttributeSet descStyle = new SimpleAttributeSet();
+        StyleConstants.setBold(descStyle, false);
+        StyleConstants.setFontSize(descStyle, 13);
+
+        try {
+            doc.insertString(doc.getLength(), title + "\n", titleStyle);
+            doc.insertString(doc.getLength(), description + "\n", descStyle);
+        } catch (BadLocationException ex) {
+            ex.printStackTrace();
+        }
+    }
+
+    private void loadImage(String imageUrl) {
+        if (imageUrl == null || imageUrl.isEmpty()) {
+            imageLabel.setIcon(null);
+            imageLabel.setText("Нет изображения");
+            return;
+        }
+
+        imageLabel.setIcon(null);
+        imageLabel.setText("Загрузка...");
+
+        wikipediaApiController.loadImage(imageUrl)
+                .thenAccept(icon -> SwingUtilities.invokeLater(() -> {
+                    if (icon != null) {
+                        imageLabel.setIcon(icon);
+                        imageLabel.setText("");
+                    } else {
+                        imageLabel.setIcon(null);
+                        imageLabel.setText("Ошибка загрузки");
+                    }
+                }));
+    }
+
+    private static String rootMessage(Throwable ex) {
+        Throwable t = ex;
+        while (t.getCause() != null) t = t.getCause();
+        return t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            try {
+                new MainFrame2();
+            } catch (IOException ex) {
+                JOptionPane.showMessageDialog(null,
+                        "Startup error: " + ex.getMessage(),
+                        "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
     }
 }

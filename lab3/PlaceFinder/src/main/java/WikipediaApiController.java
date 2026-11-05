@@ -1,121 +1,65 @@
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import javax.imageio.ImageIO;
+import javax.swing.*;
+import java.awt.*;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 
-public class WikipediaApiController {
-    private final String QUERY = "query";
-    private final String GEOSEARCH = "geosearch";
-    private final String TITLE = "title";
-    private final String LAT = "lat";
-    private final String LON = "lon";
-    private final String PAGEID = "pageid";
-    private final String PAGES = "pages";
-    private final String EXTRACT = "extract";
+public class WikipediaApiController implements ApiController {
 
+    private static final String QUERY = "query";
+    private static final String GEOSEARCH = "geosearch";
+    private static final String TITLE = "title";
+    private static final String LAT = "lat";
+    private static final String LON = "lon";
+    private static final String PAGEID = "pageid";
+    private static final String PAGES = "pages";
+    private static final String EXTRACT = "extract";
+    private static final String THUMBNAIL = "thumbnail";
+    private static final String SOURCE = "source";
+
+    private final HttpClient client = HttpClient.newHttpClient();
     private final Properties prop = new Properties();
 
-    public CompletableFuture<List<String>> findInterestingPlaces(String lat, String lng) throws IOException {
-        HttpClient client = HttpClient.newHttpClient();
-
-        String uri = String.format(
-                "https://en.wikipedia.org/w/api.php?action=query&list=geosearch&gsradius=10000&gscoord=%s%%7C%s&gslimit=5&format=json",
-                lat, lng
-        );
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .GET()
-                .uri(URI.create(uri))
-                .header("User-Agent", "PlaceFinderApp/1.0")
-                .build();
-
-        CompletableFuture<List<String>> interestingPlaces = client
-                .sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                .thenApply(response -> parsePlacesResponseToList(response.body()));
-
-        return interestingPlaces;
-    }
-
-    private List<String> parsePlacesResponseToList(String response) {
-        List<String> interestingPlaces = new ArrayList<>();
-        try {
-            JSONObject json = new JSONObject(response);
-            JSONObject query = json.getJSONObject(QUERY);
-            JSONArray geosearch = query.getJSONArray(GEOSEARCH);
-
-            for (int i = 0; i < geosearch.length() && i < 10; i++) {
-                JSONObject place = geosearch.getJSONObject(i);
-                String title = place.getString(TITLE);
-                double lat = place.getDouble(LAT);
-                double lng = place.getDouble(LON);
-                int pageId = place.getInt(PAGEID);
-
-                interestingPlaces.add(String.format("id:%d %s %.6f %.6f", pageId, title, lat, lng));
+    public WikipediaApiController() throws IOException {
+        try (InputStream stream = getClass().getClassLoader()
+                .getResourceAsStream("application.properties")) {
+            if (stream == null) {
+                throw new IOException("application.properties not found on classpath");
             }
-
-        } catch (Exception e) {
-            interestingPlaces.add("Error loading places");
+            prop.load(stream);
         }
-
-        return interestingPlaces;
     }
 
+    public record WikiResult(String description, String imageUrl) {}
 
-    public CompletableFuture<List<String>> findDescOfInterestPlaces(CompletableFuture<List<String>> interestingPlaces) {
-        List<CompletableFuture<String>> descriptionOfPlaces = new ArrayList<>();
-
-        return interestingPlaces.thenCompose(places -> {
-            for (String place : places) {
-                String pageId = extractPageId(place);
-
-                String uri = String.format(
-                        "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=true&explaintext=true&pageids=%s&format=json",
-                        pageId
-                );
-
-                HttpRequest request = HttpRequest.newBuilder()
-                        .GET()
-                        .uri(URI.create(uri))
-                        .header("User-Agent", "PlaceFinder/1.0")
-                        .build();
-
-                CompletableFuture<String> descriptionOfPlace = HttpClient.newHttpClient()
-                        .sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                        .thenApply(response -> {
-                            String description = parseDescriptionResponse(response.body());
-                            return place + " - " + description;
-                        });
-
-                descriptionOfPlaces.add(descriptionOfPlace);
-            }
-
-            return CompletableFuture.allOf(descriptionOfPlaces.toArray(new CompletableFuture[0]))
-                    .thenApply(v -> {
-                        List<String> results = new ArrayList<>();
-                        for (CompletableFuture<String> future : descriptionOfPlaces) {
-                            results.add(future.join());
-                        }
-                        return results;
-                    });
-        });
+    @Override
+    public CompletableFuture<List<String>> find(String first, String second) {
+        if (second == null || second.isEmpty()) {
+            return findDescriptionWithImage(first)
+                    .thenApply(res -> List.of(
+                            res.description() + "\u0000" +
+                                    (res.imageUrl() != null ? res.imageUrl() : "")));
+        }
+        return findInterestingPlaces(first, second);
     }
 
-    public CompletableFuture<String> findDescOfInterestPlaceById(String id) {
-
-        HttpClient client = HttpClient.newHttpClient();
-
-        String uri = String.format(
-                "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=true&explaintext=true&pageids=%s&format=json",
-                    id
-                );
+    public CompletableFuture<WikiResult> findDescriptionWithImage(String id) {
+        String uri = "https://en.wikipedia.org/w/api.php?action=query&prop=extracts%7Cpageimages"
+                + "&exintro=true&explaintext=true&pageids=" + id
+                + "&format=json&pithumbsize=400";
 
         HttpRequest request = HttpRequest.newBuilder()
                 .GET()
@@ -125,11 +69,104 @@ public class WikipediaApiController {
 
         return client
                 .sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                .thenApply(response -> parseDescriptionResponse(response.body()));
-
+                .thenApply(response -> {
+                    if (response.statusCode() != 200) {
+                        throw new RuntimeException(
+                                "Wikipedia HTTP " + response.statusCode() + ": " + response.body());
+                    }
+                    return parseDescriptionAndImage(response.body());
+                });
     }
 
-    private String parseDescriptionResponse(String response) {
+    public CompletableFuture<ImageIcon> loadImage(String imageUrl) {
+        if (imageUrl == null || imageUrl.isEmpty()) {
+            return CompletableFuture.completedFuture(null);
+        }
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .GET()
+                .uri(URI.create(imageUrl))
+                .header("User-Agent", "PlaceFinderApp/1.0 (contact@example.com)")
+                .build();
+
+        return client
+                .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
+                .thenApply(response -> {
+                    if (response.statusCode() != 200) {
+                        System.err.println("Image HTTP error: " + response.statusCode());
+                        return null;
+                    }
+                    try {
+                        Image img = ImageIO.read(new ByteArrayInputStream(response.body()));
+                        if (img == null) return null;
+
+                        int w = img.getWidth(null);
+                        int h = img.getHeight(null);
+                        double scale = Math.min(500.0 / w, 180.0 / h);
+                        Image scaled = img.getScaledInstance(
+                                (int) (w * scale), (int) (h * scale), Image.SCALE_SMOOTH);
+                        return new ImageIcon(scaled);
+                    } catch (Exception e) {
+                        System.err.println("Image parse error: " + e.getMessage());
+                        return null;
+                    }
+                })
+                .exceptionally(ex -> {
+                    System.err.println("Image load exception: " + ex.getMessage());
+                    return null;
+                });
+    }
+
+    private CompletableFuture<List<String>> findInterestingPlaces(String lat, String lng) {
+        String uri = String.format(Locale.ROOT,
+                "https://en.wikipedia.org/w/api.php?action=query&list=geosearch"
+                        + "&gsradius=10000&gscoord=%s%%7C%s&gslimit=10&format=json",
+                lat, lng);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .GET()
+                .uri(URI.create(uri))
+                .header("User-Agent", "PlaceFinderApp/1.0")
+                .build();
+
+        return client
+                .sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> {
+                    if (response.statusCode() != 200) {
+                        throw new RuntimeException(
+                                "Wikipedia HTTP " + response.statusCode() + ": " + response.body());
+                    }
+                    return parsePlacesResponseToList(response.body());
+                });
+    }
+
+    private List<String> parsePlacesResponseToList(String response) {
+        List<String> interestingPlaces = new ArrayList<>();
+        try {
+            JSONObject json = new JSONObject(response);
+            JSONObject query = json.optJSONObject(QUERY);
+            if (query == null) return interestingPlaces;
+
+            JSONArray geosearch = query.optJSONArray(GEOSEARCH);
+            if (geosearch == null) return interestingPlaces;
+
+            for (int i = 0; i < geosearch.length() && i < 10; i++) {
+                JSONObject place = geosearch.getJSONObject(i);
+                interestingPlaces.add(String.format(Locale.ROOT,
+                        "id:%d %s %.6f %.6f",
+                        place.getInt(PAGEID),
+                        place.getString(TITLE),
+                        place.getDouble(LAT),
+                        place.getDouble(LON)));
+            }
+        } catch (Exception e) {
+            System.err.println("Error parsing Wikipedia places: " + e.getMessage());
+            interestingPlaces.add("[Error loading places]");
+        }
+        return interestingPlaces;
+    }
+
+    private WikiResult parseDescriptionAndImage(String response) {
         try {
             JSONObject json = new JSONObject(response);
             JSONObject query = json.getJSONObject(QUERY);
@@ -140,29 +177,20 @@ public class WikipediaApiController {
 
             String description = page.optString(EXTRACT, "No description available");
             description = description.replace("\n", " ").trim();
-
             if (description.length() > 200) {
                 description = description.substring(0, 200) + "...";
             }
 
-            return description;
+            String imageUrl = null;
+            JSONObject thumbnail = page.optJSONObject(THUMBNAIL);
+            if (thumbnail != null) {
+                imageUrl = thumbnail.optString(SOURCE, null);
+            }
 
+            return new WikiResult(description, imageUrl);
         } catch (Exception e) {
             System.err.println("Error parsing description: " + e.getMessage());
-            return "Description not available";
+            return new WikiResult("Description not available", null);
         }
-    }
-
-    public String extractPageId(String place) {
-        try {
-            if (place.startsWith("id:")) {
-                int firstSpaceIndex = place.indexOf(' ');
-
-                return place.substring(3, firstSpaceIndex);
-            }
-        } catch (Exception e) {
-            System.err.println("Error extracting pageId from: " + place);
-        }
-        return "0";
     }
 }
