@@ -8,11 +8,7 @@ import java.io.IOException;
 
 public class MainFrame2 extends JFrame {
 
-    private static final String NO_SECOND_ARG = "";
-
-    private final GraphhopperApiController graphhopperApiController;
-    private final OpenWeatherApiController openWeatherApiController;
-    private final WikipediaApiController wikipediaApiController;
+    private final PlaceDetailsService placeDetailsService;
 
     private final DefaultListModel<String> placeModel = new DefaultListModel<>();
     private final DefaultListModel<String> interestingPlaceModel = new DefaultListModel<>();
@@ -24,9 +20,10 @@ public class MainFrame2 extends JFrame {
     public MainFrame2() throws IOException {
         super("Place Finder");
 
-        graphhopperApiController = new GraphhopperApiController();
-        openWeatherApiController = new OpenWeatherApiController();
-        wikipediaApiController = new WikipediaApiController();
+        GraphhopperApiController graphhopper = new GraphhopperApiController();
+        OpenWeatherApiController openWeather = new OpenWeatherApiController();
+        WikipediaApiController wikipedia = new WikipediaApiController();
+        placeDetailsService = new PlaceDetailsService(openWeather, wikipedia);
 
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setBounds(400, 50, 1000, 900);
@@ -73,7 +70,7 @@ public class MainFrame2 extends JFrame {
             if (searchText.isEmpty()) return;
 
             try {
-                graphhopperApiController.find(searchText, NO_SECOND_ARG)
+                graphhopper.find(searchText, "")
                         .thenAccept(places -> SwingUtilities.invokeLater(() -> {
                             placeModel.clear();
                             placeModel.addAll(places);
@@ -99,29 +96,12 @@ public class MainFrame2 extends JFrame {
                 weatherTextArea.setText("Не удалось извлечь координаты из: " + place);
                 return;
             }
-            String lat = latLng[0];
-            String lng = latLng[1];
 
-            openWeatherApiController.find(lat, lng)
-                    .thenAccept(weather -> SwingUtilities.invokeLater(() ->
-                            weatherTextArea.setText(String.valueOf(weather))))
+            placeDetailsService.load(place, latLng[0], latLng[1])
+                    .thenAccept(result -> SwingUtilities.invokeLater(() -> applyResult(result)))
                     .exceptionally(ex -> {
                         SwingUtilities.invokeLater(() ->
-                                weatherTextArea.setText("Weather error: " + rootMessage(ex)));
-                        return null;
-                    });
-
-            wikipediaApiController.find(lat, lng)
-                    .thenAccept(interestingPlaces -> SwingUtilities.invokeLater(() -> {
-                        interestingPlaceModel.clear();
-                        interestingPlaceModel.addAll(interestingPlaces);
-                        descOfInterestPlacesTextPane.setText("");
-                        imageLabel.setIcon(null);
-                        imageLabel.setText("");
-                    }))
-                    .exceptionally(ex -> {
-                        SwingUtilities.invokeLater(() ->
-                                showDescription("Ошибка", "Places error: " + rootMessage(ex)));
+                                weatherTextArea.setText("Error: " + rootMessage(ex)));
                         return null;
                     });
         });
@@ -140,10 +120,21 @@ public class MainFrame2 extends JFrame {
             String pageId = parsed[0];
             String title  = parsed[1];
 
-            wikipediaApiController.findDescriptionWithImage(pageId)
-                    .thenAccept(result -> SwingUtilities.invokeLater(() -> {
-                        showDescription(title, result.description());
-                        loadImage(result.imageUrl());
+            wikipedia.findDescriptionWithImage(pageId)
+                    .thenCompose(wikiResult ->
+                            wikipedia.loadImage(wikiResult.imageUrl())
+                                    .thenApply(img -> new Object[]{wikiResult, img}))
+                    .thenAccept(obj -> SwingUtilities.invokeLater(() -> {
+                        PlaceParser.WikiResult wr = (PlaceParser.WikiResult) obj[0];
+                        ImageIcon img = (ImageIcon) obj[1];
+                        showDescription(title, wr.description());
+                        if (img != null) {
+                            imageLabel.setIcon(img);
+                            imageLabel.setText("");
+                        } else {
+                            imageLabel.setIcon(null);
+                            imageLabel.setText("Нет изображения");
+                        }
                     }))
                     .exceptionally(ex -> {
                         SwingUtilities.invokeLater(() ->
@@ -153,6 +144,28 @@ public class MainFrame2 extends JFrame {
         });
 
         setVisible(true);
+    }
+
+    private void applyResult(PlaceDetailsResult r) {
+        weatherTextArea.setText(r.weatherText());
+
+        interestingPlaceModel.clear();
+        interestingPlaceModel.addAll(r.interestingPlaces());
+
+        if (r.selectedTitle() != null) {
+            showDescription(r.selectedTitle(), r.selectedDescription());
+        } else {
+            descOfInterestPlacesTextPane.setText("");
+        }
+
+        if (r.image() != null) {
+            imageLabel.setIcon(r.image());
+            imageLabel.setText("");
+        } else {
+            imageLabel.setIcon(null);
+            imageLabel.setText(r.interestingPlaces().isEmpty()
+                    ? "Нет мест" : "Нет изображения");
+        }
     }
 
     private void showDescription(String title, String description) {
@@ -173,28 +186,6 @@ public class MainFrame2 extends JFrame {
         } catch (BadLocationException ex) {
             ex.printStackTrace();
         }
-    }
-
-    private void loadImage(String imageUrl) {
-        if (imageUrl == null || imageUrl.isEmpty()) {
-            imageLabel.setIcon(null);
-            imageLabel.setText("Нет изображения");
-            return;
-        }
-
-        imageLabel.setIcon(null);
-        imageLabel.setText("Загрузка...");
-
-        wikipediaApiController.loadImage(imageUrl)
-                .thenAccept(icon -> SwingUtilities.invokeLater(() -> {
-                    if (icon != null) {
-                        imageLabel.setIcon(icon);
-                        imageLabel.setText("");
-                    } else {
-                        imageLabel.setIcon(null);
-                        imageLabel.setText("Ошибка загрузки");
-                    }
-                }));
     }
 
     private static String rootMessage(Throwable ex) {
