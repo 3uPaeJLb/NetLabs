@@ -5,13 +5,15 @@ import javax.swing.text.StyleConstants;
 import javax.swing.text.StyledDocument;
 import java.awt.*;
 import java.io.IOException;
+import java.util.List;
 
 public class MainFrame2 extends JFrame {
 
     private final PlaceDetailsService placeDetailsService;
 
     private final DefaultListModel<String> placeModel = new DefaultListModel<>();
-    private final DefaultListModel<String> interestingPlaceModel = new DefaultListModel<>();
+    private final DefaultListModel<PlaceDetailsResult.PlaceDetail> interestingPlaceModel =
+            new DefaultListModel<>();
 
     private final JTextArea weatherTextArea = new JTextArea();
     private final JTextPane descOfInterestPlacesTextPane = new JTextPane();
@@ -50,7 +52,9 @@ public class MainFrame2 extends JFrame {
         weatherScroll.setBounds(430, 50, 550, 250);
         add(weatherScroll);
 
-        JList<String> interestingPlacesTable = new JList<>(interestingPlaceModel);
+        JList<PlaceDetailsResult.PlaceDetail> interestingPlacesTable =
+                new JList<>(interestingPlaceModel);
+        interestingPlacesTable.setCellRenderer(new PlaceDetailRenderer());
         JScrollPane interestingScroll = new JScrollPane(interestingPlacesTable);
         interestingScroll.setBounds(10, 320, 400, 520);
         add(interestingScroll);
@@ -109,62 +113,54 @@ public class MainFrame2 extends JFrame {
         interestingPlacesTable.addListSelectionListener(e -> {
             if (e.getValueIsAdjusting()) return;
 
-            String interestingPlace = interestingPlacesTable.getSelectedValue();
-            if (interestingPlace == null) return;
+            PlaceDetailsResult.PlaceDetail detail =
+                    interestingPlacesTable.getSelectedValue();
+            if (detail == null) return;
 
-            String[] parsed = PlaceParser.parseInterestingPlace(interestingPlace);
-            if (parsed == null) {
-                showDescription("Ошибка", "Не удалось разобрать: " + interestingPlace);
-                return;
-            }
-            String pageId = parsed[0];
-            String title  = parsed[1];
-
-            wikipedia.findDescriptionWithImage(pageId)
-                    .thenCompose(wikiResult ->
-                            wikipedia.loadImage(wikiResult.imageUrl())
-                                    .thenApply(img -> new Object[]{wikiResult, img}))
-                    .thenAccept(obj -> SwingUtilities.invokeLater(() -> {
-                        PlaceParser.WikiResult wr = (PlaceParser.WikiResult) obj[0];
-                        ImageIcon img = (ImageIcon) obj[1];
-                        showDescription(title, wr.description());
-                        if (img != null) {
-                            imageLabel.setIcon(img);
-                            imageLabel.setText("");
-                        } else {
-                            imageLabel.setIcon(null);
-                            imageLabel.setText("Нет изображения");
-                        }
-                    }))
-                    .exceptionally(ex -> {
-                        SwingUtilities.invokeLater(() ->
-                                showDescription(title, "Description error: " + rootMessage(ex)));
-                        return null;
-                    });
+            showDetail(detail);
         });
 
         setVisible(true);
     }
 
     private void applyResult(PlaceDetailsResult r) {
-        weatherTextArea.setText(r.weatherText());
+        weatherTextArea.setText(r.weather());
 
         interestingPlaceModel.clear();
-        interestingPlaceModel.addAll(r.interestingPlaces());
-
-        if (r.selectedTitle() != null) {
-            showDescription(r.selectedTitle(), r.selectedDescription());
-        } else {
-            descOfInterestPlacesTextPane.setText("");
+        if (r.details() != null) {
+            interestingPlaceModel.addAll(r.details());
         }
 
-        if (r.image() != null) {
-            imageLabel.setIcon(r.image());
+        PlaceDetailsResult.PlaceDetail first =
+                interestingPlaceModel.isEmpty() ? null : interestingPlaceModel.get(0);
+
+        if (first == null) {
+            descOfInterestPlacesTextPane.setText("");
+            imageLabel.setIcon(null);
+            imageLabel.setText("Нет мест");
+            return;
+        }
+
+        showDetail(first);
+    }
+
+    /** Единая точка показа PlaceDetail — с учётом ошибки. */
+    private void showDetail(PlaceDetailsResult.PlaceDetail detail) {
+        if (detail.hasError()) {
+            showDescription(detail.title(),
+                    "Ошибка загрузки: " + detail.error());
+            imageLabel.setIcon(null);
+            imageLabel.setText("Ошибка загрузки");
+            return;
+        }
+
+        showDescription(detail.title(), detail.description());
+        if (detail.image() != null) {
+            imageLabel.setIcon(detail.image());
             imageLabel.setText("");
         } else {
             imageLabel.setIcon(null);
-            imageLabel.setText(r.interestingPlaces().isEmpty()
-                    ? "Нет мест" : "Нет изображения");
+            imageLabel.setText("Нет изображения");
         }
     }
 
@@ -181,8 +177,11 @@ public class MainFrame2 extends JFrame {
         StyleConstants.setFontSize(descStyle, 13);
 
         try {
-            doc.insertString(doc.getLength(), title + "\n", titleStyle);
-            doc.insertString(doc.getLength(), description + "\n", descStyle);
+            doc.insertString(doc.getLength(),
+                    (title != null ? title : "") + "\n", titleStyle);
+            doc.insertString(doc.getLength(),
+                    (description != null ? description : "Описание отсутствует") + "\n",
+                    descStyle);
         } catch (BadLocationException ex) {
             ex.printStackTrace();
         }
@@ -192,6 +191,26 @@ public class MainFrame2 extends JFrame {
         Throwable t = ex;
         while (t.getCause() != null) t = t.getCause();
         return t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+    }
+
+    private static final class PlaceDetailRenderer extends DefaultListCellRenderer {
+        @Override
+        public Component getListCellRendererComponent(
+                JList<?> list, Object value, int index,
+                boolean isSelected, boolean cellHasFocus) {
+
+            super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+
+            if (value instanceof PlaceDetailsResult.PlaceDetail d) {
+                String text = d.title() != null ? d.title() : "(без названия)";
+                if (d.hasError()) {
+                    text += "  ⚠";
+                    if (!isSelected) setForeground(new Color(180, 0, 0));
+                }
+                setText(text);
+            }
+            return this;
+        }
     }
 
     public static void main(String[] args) {

@@ -8,14 +8,22 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 
 public class WikipediaApiController implements ApiController {
 
-    private final HttpClient client = HttpClient.newHttpClient();
+    private static final String USER_AGENT =
+            "PlaceFinder/1.0 (https://github.com/your-repo/placefinder; martinvartazaran0416@gmail.com)";
+
+    private final HttpClient client = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
+
     private final Properties prop = new Properties();
 
     public WikipediaApiController() throws IOException {
@@ -32,9 +40,9 @@ public class WikipediaApiController implements ApiController {
     public CompletableFuture<List<String>> find(String first, String second) {
         if (second == null || second.isEmpty()) {
             return findDescriptionWithImage(first)
-                    .thenApply(res -> List.of(
-                            res.description() + "\u0000" +
-                                    (res.imageUrl() != null ? res.imageUrl() : "")));
+                    .thenApply(wr -> List.of(
+                            wr.description() != null ? wr.description() : "",
+                            wr.imageUrl() != null ? wr.imageUrl() : ""));
         }
         return findInterestingPlaces(first, second);
     }
@@ -48,18 +56,11 @@ public class WikipediaApiController implements ApiController {
         HttpRequest request = HttpRequest.newBuilder()
                 .GET()
                 .uri(URI.create(uri))
-                .header("User-Agent", "PlaceFinder/1.0")
+                .header("User-Agent", USER_AGENT)
                 .build();
 
-        return client
-                .sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                .thenApply(response -> {
-                    if (response.statusCode() != 200) {
-                        throw new RuntimeException(
-                                "Wikipedia HTTP " + response.statusCode() + ": " + response.body());
-                    }
-                    return PlaceParser.parseGeosearchResponse(response.body());
-                });
+        return sendForString(request)
+                .thenApply(PlaceParser::parseGeosearchResponse);
     }
 
     public CompletableFuture<PlaceParser.WikiResult> findDescriptionWithImage(String id) {
@@ -70,18 +71,33 @@ public class WikipediaApiController implements ApiController {
         HttpRequest request = HttpRequest.newBuilder()
                 .GET()
                 .uri(URI.create(uri))
-                .header("User-Agent", "PlaceFinder/1.0")
+                .header("User-Agent", USER_AGENT)
                 .build();
 
-        return client
-                .sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                .thenApply(response -> {
-                    if (response.statusCode() != 200) {
-                        throw new RuntimeException(
-                                "Wikipedia HTTP " + response.statusCode() + ": " + response.body());
-                    }
-                    return PlaceParser.parseDescriptionAndImage(response.body());
-                });
+        return sendForString(request)
+                .thenApply(PlaceParser::parseDescriptionAndImage);
+    }
+
+    public CompletableFuture<Map<String, PlaceParser.WikiResult>>
+    findDescriptionsWithImages(List<String> ids) {
+
+        if (ids == null || ids.isEmpty()) {
+            return CompletableFuture.completedFuture(Map.of());
+        }
+
+        String joined = String.join("|", ids);
+        String uri = "https://en.wikipedia.org/w/api.php?action=query&prop=extracts%7Cpageimages"
+                + "&exintro=true&explaintext=true&pageids=" + joined
+                + "&format=json&pithumbsize=400";
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .GET()
+                .uri(URI.create(uri))
+                .header("User-Agent", USER_AGENT)
+                .build();
+
+        return sendForString(request)
+                .thenApply(PlaceParser::parseDescriptionsAndImages);
     }
 
     public CompletableFuture<ImageIcon> loadImage(String imageUrl) {
@@ -92,34 +108,81 @@ public class WikipediaApiController implements ApiController {
         HttpRequest request = HttpRequest.newBuilder()
                 .GET()
                 .uri(URI.create(imageUrl))
-                .header("User-Agent", "PlaceFinderApp/1.0 (martinvartazaran0416@gmail.com)")
+                .header("User-Agent", USER_AGENT)
                 .build();
 
         return client
                 .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
                 .thenApply(response -> {
                     if (response.statusCode() != 200) {
-                        System.err.println("Image HTTP error: " + response.statusCode());
-                        return null;
+                        throw new RuntimeException(
+                                "Image HTTP " + response.statusCode() + " for " + imageUrl);
                     }
                     try {
                         Image img = ImageIO.read(new ByteArrayInputStream(response.body()));
-                        if (img == null) return null;
-
+                        if (img == null) {
+                            throw new RuntimeException(
+                                    "Image decode returned null for " + imageUrl);
+                        }
                         int w = img.getWidth(null);
                         int h = img.getHeight(null);
                         double scale = Math.min(500.0 / w, 180.0 / h);
                         Image scaled = img.getScaledInstance(
                                 (int) (w * scale), (int) (h * scale), Image.SCALE_SMOOTH);
                         return new ImageIcon(scaled);
-                    } catch (Exception e) {
-                        System.err.println("Image parse error: " + e.getMessage());
-                        return null;
+                    } catch (IOException e) {
+                        throw new RuntimeException(
+                                "Image parse error for " + imageUrl + ": " + e.getMessage(), e);
                     }
-                })
-                .exceptionally(ex -> {
-                    System.err.println("Image load exception: " + ex.getMessage());
-                    return null;
                 });
+    }
+
+    private CompletableFuture<String> sendForString(HttpRequest request) {
+        return client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .thenCompose(response -> {
+                    int code = response.statusCode();
+                    if (code == 200) {
+                        return CompletableFuture.completedFuture(response.body());
+                    }
+                    if (code == 429) {
+                        long waitSec = response.headers()
+                                .firstValue("Retry-After")
+                                .map(WikipediaApiController::parseRetryAfter)
+                                .orElse(5L);
+                        System.err.println(
+                                "Wikipedia 429 — retry after " + waitSec + "s");
+                        return CompletableFuture
+                                .supplyAsync(() -> {
+                                    try { Thread.sleep(waitSec * 1000L); }
+                                    catch (InterruptedException ignored) { }
+                                    return null;
+                                })
+                                .thenCompose(v -> client.sendAsync(
+                                        request, HttpResponse.BodyHandlers.ofString()))
+                                .thenApply(retry -> {
+                                    if (retry.statusCode() != 200) {
+                                        throw new RuntimeException(
+                                                "Wikipedia HTTP " + retry.statusCode()
+                                                        + " after retry: " + truncate(retry.body()));
+                                    }
+                                    return retry.body();
+                                });
+                    }
+                    throw new RuntimeException(
+                            "Wikipedia HTTP " + code + ": " + truncate(response.body()));
+                });
+    }
+
+    private static long parseRetryAfter(String value) {
+        try {
+            return Math.max(1L, Long.parseLong(value.trim()));
+        } catch (NumberFormatException e) {
+            return 5L;
+        }
+    }
+
+    private static String truncate(String s) {
+        if (s == null) return "<null>";
+        return s.length() <= 300 ? s : s.substring(0, 300) + "...";
     }
 }
